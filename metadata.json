@@ -1,0 +1,7 @@
+{
+  "name": "V.I.S.T.O: OCUPAÇÕES VÍDEO_COREOGRÁFICAS",
+  "description": "Projeto de ocupação vídeo-coreográfica no LUgarZinho (4º Distrito, Porto Alegre). Inclui a oficina Lab V.I.S.T.O: Dispositivos de Presença Intermediada.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
