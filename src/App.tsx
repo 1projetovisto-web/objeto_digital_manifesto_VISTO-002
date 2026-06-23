@@ -1,485 +1,461 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>V.I.S.T.O - Ocupações Vídeo-Coreográficas</title>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/vision_bundle.js" crossorigin="anonymous"></script>
 
-import React, { useEffect, useRef, useState } from 'react';
-import p5 from 'p5';
-import { Camera, Music, Activity, Info, Maximize2, Minimize2, AlertCircle } from 'lucide-react';
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #050508;
+      overflow: hidden;
+      font-family: 'Courier New', Courier, monospace;
+      color: #ffffff;
+      user-select: none;
+    }
 
-// Certifique-se de que o p5 esteja disponível globalmente
-if (typeof window !== 'undefined') {
-  (window as any).p5 = p5;
-}
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
 
-// O quote do Manifesto V.I.S.T.O (mantido para a lógica da grade)
-const quoteText = "MANIFESTO V.I.S.T.O_CRIAR. TRANSCREVER. CODIFICAR. No V.I.S.T.O_LAB (visto.art.br)... [Conteúdo completo do manifesto mantido] V.I.S.T.O_LAB — Porto Alegre, 4º Distrito visto.art.br ";
+    /* UI Overlay Panel */
+    #ui-overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      background: rgba(5, 5, 10, 0.65);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(0, 255, 242, 0.2);
+      padding: 15px 25px;
+      border-radius: 8px;
+      box-shadow: 0 0 20px rgba(0, 255, 242, 0.1);
+      pointer-events: none;
+      max-width: 600px;
+      z-index: 10;
+    }
 
-export default function App() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [canStart, setCanStart] = useState(false);
-  const [showInfo, setShowInfo] = useState(true);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [hasStarted, setHasStarted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+    #logo {
+      width: 60px;
+      height: 60px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 0, 128, 0.5);
+      object-fit: cover;
+    }
 
-  // Variável para a string de densidade de caracteres (pode ser customizada)
-  // Deixe mais densa para contornos mais nítidos
-  const density = "Ñ@#W$9876543210?!abc;:+=-,._      ";
+    #title-container {
+      display: flex;
+      flex-direction: column;
+    }
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setCanStart(true);
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, []);
+    #main-title {
+      font-size: 16px;
+      font-weight: bold;
+      letter-spacing: 2px;
+      color: #00fff2;
+      text-shadow: 0 0 8px rgba(0, 255, 242, 0.6);
+      margin: 0 0 4px 0;
+    }
 
-  useEffect(() => {
-    if (!containerRef.current) return;
+    #subtitle {
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: #ffffff;
+      opacity: 0.85;
+      margin: 0;
+    }
 
-    const sketch = (p: p5) => {
-      // 1. Alteração: Segmentation em vez de Pose
-      let segmentationTracker: any;
-      let camera: any;
-      let resultsReady = false;
-      let textNodes: TextNode[] = [];
-      let baseFontSize = 14;
+    #loading-status {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(255, 0, 128, 0.15);
+      border: 1px solid #ff0080;
+      padding: 8px 15px;
+      font-size: 12px;
+      border-radius: 4px;
+      text-shadow: 0 0 5px #ff0080;
+      animation: pulse 2s infinite ease-in-out;
+      z-index: 10;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.6; }
+      50% { opacity: 1; }
+      100% { opacity: 0.6; }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="ui-overlay">
+    <img id="logo" src="https://res.cloudinary.com/dwx6kf2f6/image/upload/v1780873975/favicon_aebdg1.jpg" alt="V.I.S.T.O Logo">
+    <div id="title-container">
+      <h1 id="main-title">V.I.S.T.O: OCUPAÇÕES VÍDEO_COREOGRÁFICAS</h1>
+      <p id="subtitle">REABRINDO O LUGARZINHO NO 4º DISTRITO / POA</p>
+    </div>
+  </div>
+
+  <div id="loading-status">INITIALIZING COMPUTER VISION SYSTEMS...</div>
+
+  <div id="canvas-container"></div>
+
+  <script>
+    let video;
+    let poseLandmarker;
+    let handLandmarker;
+    let imageSegmenter;
+    
+    let poseResults = null;
+    let handResults = null;
+    let segmentationMask = null;
+    
+    let isModelsLoaded = false;
+    let blobPoints = [];
+    let smoothedBlobPoints = [];
+    
+    // Spring vectors for elastic threads interpolation
+    let leftHandSpring = null;
+    let rightHandSpring = null;
+    const SPRING_K = 0.15;
+    const SPRING_DAMP = 0.8;
+    let leftVel, rightVel;
+
+    async function initializeMediaPipe() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+      );
+
+      // 1. Pose Landmarker
+      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`, delegate: "GPU" },
+        runningMode: "VIDEO", outputBytestream: false
+      });
+
+      // 2. Hand Landmarker
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+        runningMode: "VIDEO", numHands: 2
+      });
+
+      // 3. Image Segmenter (Selfie Segmenter for cleaner, faster body silhouette)
+      imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task`, delegate: "GPU" },
+        runningMode: "VIDEO", outputCategoryMask: true
+      });
+
+      isModelsLoaded = true;
+      document.getElementById('loading-status').innerText = "SYSTEMS ONLINE // INTERACTIVE CONTEXT READY";
+      setTimeout(() => document.getElementById('loading-status').style.display = 'none', 3000);
+    }
+
+    function setup() {
+      const canvas = createCanvas(windowWidth, windowHeight);
+      canvas.parent('canvas-container');
       
-      // Definição da grade de mosaico
-      const cols = 80; // Resolução horizontal do mosaico
-      const rows = 60; // Resolução vertical do mosaico
-      let cellW: number, cellH: number;
+      video = createCapture(VIDEO, () => {
+        initializeMediaPipe();
+      });
+      video.size(640, 480);
+      video.hide();
 
-      // Variáveis de Áudio (mantidas)
-      let audioCtx: AudioContext | null = null;
-      let oscL: OscillatorNode | null = null;
-      let oscR: OscillatorNode | null = null;
-      let gainL: GainNode | null = null;
-      let gainR: GainNode | null = null;
-      let isAudioStarted = false;
-      let cameraStarted = false;
-
-      // 2. Alteração: Função de Start para Selfie Segmentation
-      const startCameraAndSegmentation = async () => {
-        if (cameraStarted) return;
-        setError(null);
-        try {
-          // Carregamento dinâmico das bibliotecas do MediaPipe
-          const mpSegmentation = (window as any).SelfieSegmentation;
-          const mpCamera = (window as any).Camera;
-
-          if (!mpSegmentation || !mpCamera) {
-            setError("Bibliotecas MediaPipe (Selfie Segmentation) ainda não carregadas.");
-            return;
-          }
-
-          if (!videoRef.current) {
-            setError("Elemento de vídeo não encontrado.");
-            return;
-          }
-
-          // Inicializa o Selfie Segmentation
-          segmentationTracker = new mpSegmentation({
-            locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
-          });
-
-          // Configurações: Seleção de modelo para maior precisão (1)
-          segmentationTracker.setOptions({
-            modelSelection: 1, 
-          });
-
-          // Callback de resultados (Muda de landmarks para máscara)
-          segmentationTracker.onResults(onSegmentationResults);
-
-          camera = new mpCamera(videoRef.current, {
-            onFrame: async () => {
-              if (videoRef.current) {
-                await segmentationTracker.send({ image: videoRef.current });
-              }
-            },
-            width: 640,
-            height: 480
-          });
-
-          await camera.start();
-          console.log("MediaPipe Camera (Segmentation) started");
-          cameraStarted = true;
-          setIsLoaded(true);
-          setError(null);
-        } catch (e: any) {
-          console.error("Segmentation/Camera Error:", e);
-          setError("Erro ao acessar a câmera ou iniciar segmentação.");
-        }
-      };
-
-      // 3. Alteração: Novo callback para processar a máscara
-      let segmentCanvas: p5.Graphics;
-      function onSegmentationResults(results: any) {
-        if (!segmentCanvas) {
-          // Cria um canvas auxiliar na resolução nativa da câmera
-          segmentCanvas = p.createGraphics(640, 480);
-        }
-        
-        // Desenha a máscara de segmentação no canvas auxiliar
-        segmentCanvas.clear();
-        segmentCanvas.image(results.segmentationMask, 0, 0, 640, 480);
-        resultsReady = true;
-      }
-
-      // 4. Alteração Radical na Classe TextNode: Sem física, apenas mapeamento
-      class TextNode {
-        pos: p5.Vector;
-        gridI: number; // Índice na grade (coluna)
-        gridJ: number; // Índice na grade (linha)
-
-        constructor(x: number, y: number, i: number, j: number) {
-          this.pos = p.createVector(x, y);
-          this.gridI = i;
-          this.gridJ = j;
-        }
-
-        // Função de amostragem orgânica
-        show(char: string, segmentCanvas: p5.Graphics) {
-          // Pega os pixels da máscara
-          segmentCanvas.loadPixels();
-          
-          if (segmentCanvas.pixels.length === 0) return;
-
-          // Mapeia a posição da grade (i, j) para os pixels da câmera (640x480)
-          // Inverte o eixo X (cols - 1 - this.gridI) para efeito de espelho natural
-          let videoX = Math.floor(p.map(cols - 1 - this.gridI, 0, cols, 0, segmentCanvas.width));
-          let videoY = Math.floor(p.map(this.gridJ, 0, rows, 0, segmentCanvas.height));
-          
-          let pixelIndex = (videoX + videoY * segmentCanvas.width) * 4;
-
-          // Valor de segmentação (brilho na máscara, canal Red)
-          let segVal = segmentCanvas.pixels[pixelIndex]; 
-
-          // FATOR ORGÂNICO: Se o pixel pertence ao usuário (corpo detectado > 128)
-          if (segVal > 128) { 
-            // Estética Cyberpunk/Neon (Verde Emerald)
-            p.fill(0, 255, 133); 
-            p.textSize(cellW * 1.3); // Fonte ligeiramente maior para preencher a silhueta
-            p.text(char, this.pos.x, this.pos.y);
-          } else {
-            // Opcional: O que desenhar no fundo (background)
-            // Para o V.I.S.T.O, podemos deixar o texto bem apagado ou invisível
-            p.fill(30, 30, 30); // Cinza muito escuro
-            p.textSize(cellW * 0.9);
-            // Opcional: Descomente para desenhar texto no fundo
-            // p.text(char, this.pos.x, this.pos.y);
-          }
-        }
-      }
-
-      p.setup = () => {
-        p.createCanvas(p.windowWidth, p.windowHeight).parent(containerRef.current!);
-        p.textFont('monospace');
-        p.textAlign(p.CENTER, p.CENTER);
-        p.frameRate(60);
-        
-        // Inicializa a grade e os TextNodes
-        createGridNodes();
-      };
-
-      // Função auxiliar para criar a grade de nós
-      function createGridNodes() {
-        textNodes = [];
-        cellW = p.width / cols;
-        cellH = p.height / rows;
-
-        for (let j = 0; j < rows; j++) {
-          for (let i = 0; i < cols; i++) {
-            // Posição na tela de exibição
-            let screenX = i * cellW + cellW / 2;
-            let screenY = j * cellH + cellH / 2;
-            textNodes.push(new TextNode(screenX, screenY, i, j));
-          }
-        }
-      }
-
-      p.draw = () => {
-        p.background(0);
-
-        if (!resultsReady || !segmentCanvas) {
-          p.fill(0, 255, 133);
-          p.textAlign(p.CENTER);
-          p.textSize(16);
-          p.text("Sincronizando Sistema de Visão por Silhueta...", p.width / 2, p.height / 2);
-          return;
-        }
-
-        // --- Renderização do Mosaico de Texto ---
-        textNodes.forEach((node, index) => {
-          // Cicla pelo Manifesto V.I.S.T.O
-          const char = quoteText[index % quoteText.length];
-          node.show(char, segmentCanvas);
-        });
-
-        // --- Lógica de Áudio (Adaptada para usar a máscara em vez de wrists) ---
-        if (isAudioStarted && audioCtx && gainL && gainR && oscL && oscR) {
-          // Como não temos mais keypoints, vamos usar a densidade total do corpo
-          // para modular o som, ou focar em áreas específicas do canvas (L/R)
-          segmentCanvas.loadPixels();
-          
-          let totalBodyPixelsL = 0;
-          let totalBodyPixelsR = 0;
-
-          // Amostragem rápida (pula pixels) para performance
-          for (let y = 0; y < 480; y += 10) {
-            for (let x = 0; x < 640; x += 10) {
-              let idx = (x + y * 640) * 4;
-              if (segmentCanvas.pixels[idx] > 128) {
-                if (x < 320) totalBodyPixelsL++;
-                else totalBodyPixelsR++;
-              }
-            }
-          }
-
-          const now = audioCtx.currentTime;
-          
-          // Modula frequência e volume baseado na "massa" do corpo em cada lado
-          const freqL = p.map(totalBodyPixelsL, 0, 1536, 100, 300); // 320x480 / 10x10 amostragem
-          const volL = p.map(totalBodyPixelsL, 0, 1536, 0, 0.1);
-          oscL.frequency.setTargetAtTime(freqL, now, 0.1);
-          gainL.gain.setTargetAtTime(volL, now, 0.1);
-
-          const freqR = p.map(totalBodyPixelsR, 0, 1536, 100, 300);
-          const volR = p.map(totalBodyPixelsR, 0, 1536, 0, 0.1);
-          oscR.frequency.setTargetAtTime(freqR, now, 0.1);
-          gainR.gain.setTargetAtTime(volR, now, 0.1);
-        }
-      };
-
-      p.startPerformance = async () => {
-        // Troca de Pose para Segmentation
-        await startCameraAndSegmentation();
-        
-        if (!isAudioStarted) {
-          try {
-            // Inicialização do Áudio (mantida idêntica)
-            audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-            
-            oscL = audioCtx.createOscillator();
-            oscR = audioCtx.createOscillator();
-            gainL = audioCtx.createGain();
-            gainR = audioCtx.createGain();
-            const panL = audioCtx.createStereoPanner();
-            const panR = audioCtx.createStereoPanner();
-
-            oscL.type = 'sine';
-            oscR.type = 'sine';
-            gainL.gain.setValueAtTime(0, audioCtx.currentTime);
-            gainR.gain.setValueAtTime(0, audioCtx.currentTime);
-            panL.pan.setValueAtTime(-0.7, audioCtx.currentTime);
-            panR.pan.setValueAtTime(0.7, audioCtx.currentTime);
-
-            oscL.connect(gainL).connect(panL).connect(audioCtx.destination);
-            oscR.connect(gainR).connect(panR).connect(audioCtx.destination);
-
-            oscL.start();
-            oscR.start();
-            
-            if (audioCtx.state === 'suspended') {
-              await audioCtx.resume();
-            }
-            
-            isAudioStarted = true;
-          } catch(e) {
-            console.error("Audio init error", e);
-          }
-          setHasStarted(true);
-        }
-      };
-
-      p.mousePressed = () => {
-        p.startPerformance();
-      };
-
-      p.windowResized = () => {
-        p.resizeCanvas(p.windowWidth, p.windowHeight);
-        createGridNodes();
-      };
-    };
-
-    const p5Instance = new p5(sketch);
-    (window as any).p5Instance = p5Instance;
-
-    return () => {
-      p5Instance.remove();
-      delete (window as any).p5Instance;
-    };
-  }, []);
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-        setIsFullscreen(false);
+      leftVel = createVector(0, 0);
+      rightVel = createVector(0, 0);
+      leftHandSpring = createVector(width / 2, height / 2);
+      rightHandSpring = createVector(width / 2, height / 2);
+      
+      // Initialize smoothed points structure
+      for (let i = 0; i < 40; i++) {
+        smoothedBlobPoints.push(createVector(width / 2, height / 2));
       }
     }
-  };
 
-  return (
-    <div className="relative w-full h-screen bg-black overflow-hidden font-sans text-white">
-      {/* Video Feed (mantido transparente) */}
-      <video
-        ref={videoRef}
-        playsInline
-        autoPlay
-        muted
-        width={640}
-        height={480}
-        className="fixed top-0 left-0 w-[640px] h-[480px] opacity-0 pointer-events-none -z-50"
-      />
+    function draw() {
+      background(5, 5, 12);
+      
+      if (!video || video.width === 0) return;
 
-      {/* Canvas Container */}
-      <div ref={containerRef} className="absolute inset-0 z-0" />
+      // Track systems when video frame updates
+      if (isModelsLoaded && video.elt.readyState >= 3) {
+        const timestamp = performance.now();
+        
+        // Run inference frames synchronously for the rendering ticks
+        poseLandmarker.detectForVideo(video.elt, timestamp, (results) => { poseResults = results; });
+        handLandmarker.detectForVideo(video.elt, timestamp, (results) => { handResults = results; });
+        imageSegmenter.segmentForVideo(video.elt, timestamp, (results) => { 
+          segmentationMask = results.categoryMask; 
+        });
+      }
 
-      {/* Error Message (mantida) */}
-      {error && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[100] bg-red-500/90 backdrop-blur-md px-6 py-3 rounded-2xl flex items-center gap-3 shadow-2xl">
-          <AlertCircle size={20} />
-          <span className="text-sm font-medium">{error}</span>
-        </div>
-      )}
+      // Layer 1: Mirror and Draw Live Webcam Background
+      push();
+      translate(width, 0);
+      scale(-1, 1);
+      tint(255, 65); // Muted backdrop blend
+      image(video, 0, 0, width, height);
+      pop();
 
-      {/* UI Overlay (mantida idêntica para o V.I.S.T.O) */}
-      <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-6">
-        {/* Header */}
-        <header className="flex justify-between items-start pointer-events-auto">
-          <div>
-            <h1 className="text-2xl font-light tracking-widest uppercase flex items-center gap-3">
-              <Activity className="text-emerald-400 animate-pulse" />
-              V.I.S.T.O (Silhueta V1)
-            </h1>
-            <p className="text-xs text-zinc-500 mt-1 tracking-wider uppercase">
-              Ocupações Vídeo_Coreográficas &bull; 4º Distrito Poa
-            </p>
-          </div>
+      // Layer 2: Compute and Render Organic Body Blob Contour
+      if (segmentationMask) {
+        generateBlobFromMask(segmentationMask);
+      }
+
+      // Layer 3: Dynamic Mechanics (Elastic Threads, Skeleton & Particle Joints)
+      renderGenerativeSystems();
+    }
+
+    function generateBlobFromMask(mask) {
+      const maskWidth = mask.width;
+      const maskHeight = mask.height;
+      const maskData = mask.getAsUint8Array();
+      
+      let rawPoints = [];
+      const numAngles = 40; 
+      
+      // Compute center of gravity approximation based on pose tracking if available, else center screen
+      let centerX = width / 2;
+      let centerY = height / 2;
+      
+      if (poseResults && poseResults.landmarks && poseResults.landmarks[0] && poseResults.landmarks[0][0]) {
+        centerX = (1 - poseResults.landmarks[0][0].x) * width;
+        centerY = poseResults.landmarks[0][0].y * height;
+      }
+
+      // Cast radial rays outward to detect boundaries of the high contrast mask segmentation
+      for (let i = 0; i < numAngles; i++) {
+        let angle = (TWO_PI / numAngles) * i;
+        let maxRadius = max(width, height) * 0.5;
+        let foundEdge = false;
+        
+        // Ray marching along the segment space
+        for (let r = 10; r < maxRadius; r += 15) {
+          let checkX = centerX + cos(angle) * r;
+          let checkY = centerY + sin(angle) * r;
           
-          <div className="flex gap-4">
-            <button 
-              onClick={() => setShowInfo(!showInfo)}
-              className="p-2 rounded-full border border-white/10 bg-black/20 backdrop-blur-md hover:bg-white/10 transition-colors"
-            >
-              <Info size={20} />
-            </button>
-            <button 
-              onClick={toggleFullscreen}
-              className="p-2 rounded-full border border-white/10 bg-black/20 backdrop-blur-md hover:bg-white/10 transition-colors"
-            >
-              {isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
-            </button>
-          </div>
-        </header>
+          // Map screen coordinates back to mask matrix indices
+          let maskImgX = floor(map(checkX, 0, width, maskWidth, 0)); // Account for horizontal mirroring
+          let maskImgY = floor(map(checkY, 0, height, 0, maskHeight));
+          
+          if (maskImgX >= 0 && maskImgX < maskWidth && maskImgY >= 0 && maskImgY < maskHeight) {
+            let index = maskImgY * maskWidth + maskImgX;
+            // Class 0 is background usually, human segment holds values > 0
+            if (maskData[index] === 0) { 
+              rawPoints.push(createVector(checkX, checkY));
+              foundEdge = true;
+              break;
+            }
+          }
+        }
+        if (!foundEdge) {
+          rawPoints.push(createVector(centerX + cos(angle) * 150, centerY + sin(angle) * 150));
+        }
+      }
 
-        {/* Status & Controls */}
-        <footer className="flex justify-between items-end pointer-events-auto">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] uppercase tracking-tighter">
-              <div className={`w-1.5 h-1.5 rounded-full ${isLoaded ? 'bg-emerald-400' : 'bg-zinc-600 animate-ping'}`} />
-              {isLoaded ? 'Sistema Ativo (Segmentation)' : 'Carregando Modelos...'}
-            </div>
-            <div className="text-[10px] text-zinc-500 uppercase tracking-[0.2em]">
-              {hasStarted ? 'Performance em curso' : 'Clique na tela para ativar o som'}
-            </div>
-          </div>
+      // Smooth boundaries with temporal easing to create organic latency
+      for (let i = 0; i < numAngles; i++) {
+        smoothedBlobPoints[i].x = lerp(smoothedBlobPoints[i].x, rawPoints[i].x, 0.15);
+        smoothedBlobPoints[i].y = lerp(smoothedBlobPoints[i].y, rawPoints[i].y, 0.15);
+      }
 
-          <div className="flex gap-6 text-zinc-400">
-            <div className="flex flex-col items-center gap-1">
-              <Camera size={16} className="opacity-50" />
-              <span className="text-[8px] uppercase">Silhouette</span>
-            </div>
-            <div className="flex flex-col items-center gap-1">
-              <Music size={16} className="opacity-50" />
-              <span className="text-[8px] uppercase">Audio</span>
-            </div>
-          </div>
-        </footer>
-      </div>
+      // Draw the neon organic mesh blob boundary
+      push();
+      noFill();
+      strokeWeight(4);
+      
+      // Cyber neon glow styling
+      drawingContext.shadowBlur = 25;
+      drawingContext.shadowColor = '#00fff2';
+      stroke(0, 255, 242, 220);
+      
+      // Pulse animation dynamic offset
+      let wave = sin(frameCount * 0.04) * 6;
 
-      {/* Info Modal (mantida idêntica) */}
-      {showInfo && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-xl pointer-events-auto">
-          <div className="max-w-md w-full bg-zinc-900 border border-white/10 rounded-3xl p-8 shadow-2xl">
-            <div className="flex justify-between items-start mb-6">
-              <h2 className="text-xl font-light uppercase tracking-widest">Lab V.I.S.T.O</h2>
-              <button onClick={() => setShowInfo(false)} className="text-zinc-500 hover:text-white">
-                <Minimize2 size={20} />
-              </button>
-            </div>
+      beginShape();
+      for (let i = 0; i < numAngles; i++) {
+        let p = smoothedBlobPoints[i];
+        let dynamicX = p.x + cos(i) * wave;
+        let dynamicY = p.y + sin(i) * wave;
+        curveVertex(dynamicX, dynamicY);
+      }
+      // Close curve smoothly
+      for (let i = 0; i < 3; i++) {
+        let p = smoothedBlobPoints[i];
+        curveVertex(p.x + cos(i) * wave, p.y + sin(i) * wave);
+      }
+      endShape();
+      
+      // Cyber Web grid overlay fills
+      drawingContext.shadowBlur = 10;
+      strokeWeight(0.5);
+      stroke(255, 0, 128, 70);
+      for (let i = 0; i < numAngles; i += 2) {
+        line(centerX, centerY, smoothedBlobPoints[i].x, smoothedBlobPoints[i].y);
+      }
+      pop();
+    }
+
+    function renderGenerativeSystems() {
+      let leftHandPos = null;
+      let rightHandPos = null;
+
+      // Extract Pose data and draw elements
+      if (poseResults && poseResults.landmarks) {
+        for (const landmarks of poseResults.landmarks) {
+          
+          // Custom indices mapping structural tracking elements
+          const structuralJoints = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]; // Shoulders, Elbows, Wrists, Hips, Knees, Ankles
+          
+          // Draw connecting bones
+          strokeWeight(1.5);
+          stroke(255, 255, 255, 80);
+          connectJoints(landmarks, 11, 12); // Shoulders
+          connectJoints(landmarks, 11, 13); connectJoints(landmarks, 13, 15); // Left arm
+          connectJoints(landmarks, 12, 14); connectJoints(landmarks, 14, 16); // Right arm
+          connectJoints(landmarks, 11, 23); connectJoints(landmarks, 12, 24); // Torso
+          connectJoints(landmarks, 23, 24); // Hips
+          connectJoints(landmarks, 23, 25); connectJoints(landmarks, 25, 27); // Left leg
+          connectJoints(landmarks, 24, 26); connectJoints(landmarks, 26, 28); // Right leg
+
+          // Extract Wrists directly for tracking anchoring fallback
+          leftHandPos = createVector((1 - landmarks[15].x) * width, landmarks[15].y * height);
+          rightHandPos = createVector((1 - landmarks[16].x) * width, landmarks[16].y * height);
+
+          // Draw Joint Node Glow Particles
+          for (let i = 0; i < landmarks.length; i++) {
+            let x = (1 - landmarks[i].x) * width;
+            let y = landmarks[i].y * height;
             
-            <div className="space-y-4 text-zinc-400 text-sm leading-relaxed">
-              <p>
-                <strong>Dispositivos de Presença Intermediada</strong><br/>
-                Este experimento integra o projeto <em>V.I.S.T.O: Ocupações Vídeo_Coreográficas</em>, celebrando a reabertura do <strong>LUGARzinho</strong> no 4º Distrito de Porto Alegre.
-              </p>
-              <ul className="space-y-2">
-                <li className="flex gap-3">
-                  <span className="text-emerald-400">01.</span>
-                  <span>A interface explora a presença do corpo mediada pela tecnologia (IA de Silhueta).</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="text-pink-400">02.</span>
-                  <span>O movimento distorce a linguagem do Manifesto V.I.S.T.O, criando novas coreografias visuais.</span>
-                </li>
-              </ul>
-            </div>
+            push();
+            drawingContext.shadowBlur = 15;
+            if (structuralJoints.includes(i)) {
+              drawingContext.shadowColor = '#ff0080';
+              fill(255, 0, 128);
+              noStroke();
+              circle(x, y, 14);
+              fill(255);
+              circle(x, y, 6);
+            } else {
+              drawingContext.shadowColor = '#00fff2';
+              fill(0, 255, 242, 200);
+              noStroke();
+              circle(x, y, 6);
+            }
+            pop();
+          }
+        }
+      }
 
-            <div className="mt-8 flex justify-center">
-              <img 
-                src="https://raw.githubusercontent.com/1projetovisto-web/visto_lab_landing/main/public/favicon.jpg" 
-                width="120" 
-                height="120" 
-                alt="v.i.s.t.o favicon" 
-                className="rounded-none shadow-2xl border border-white/10 opacity-90 animate-neon-blink"
-              />
-            </div>
+      // Process Hand Fingertips and update Elastic Links
+      let currentLeftTip = null;
+      let currentRightTip = null;
 
-            <button 
-              onClick={() => {
-                if (!canStart) return;
-                setShowInfo(false);
-                if ((window as any).p5Instance) {
-                  (window as any).p5Instance.startPerformance();
-                }
-              }}
-              disabled={!canStart}
-              className={`w-full mt-8 py-4 rounded-2xl font-medium uppercase tracking-widest text-xs transition-all ${
-                canStart 
-                  ? "bg-white text-black hover:bg-emerald-400 cursor-pointer" 
-                  : "bg-zinc-800 text-zinc-500 cursor-not-allowed opacity-50"
-              }`}
-            >
-              {canStart ? "Iniciar Performance" : "Sincronizando Sistema..."}
-            </button>
-          </div>
-        </div>
-      )}
+      if (handResults && handResults.landmarks) {
+        for (let h = 0; h < handResults.landmarks.length; h++) {
+          let handLandmarks = handResults.landmarks[h];
+          let handedness = handResults.handednesses[h][0].categoryName; 
+          
+          // Mirroring maps "Left" tracker data to visual Right screen space
+          let isVisualRight = handedness === "Left"; 
+          
+          // Index fingertip tracker node
+          let tipX = (1 - handLandmarks[8].x) * width;
+          let tipY = handLandmarks[8].y * height;
+          
+          if (isVisualRight) {
+            currentRightTip = createVector(tipX, tipY);
+          } else {
+            currentLeftTip = createVector(tipX, tipY);
+          }
 
-      {/* Custom Styles (mantida) */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        canvas {
-          display: block;
+          // Draw Glowing tip nodes
+          const fingerTips = [4, 8, 12, 16, 20];
+          for (let index of fingerTips) {
+            let fx = (1 - handLandmarks[index].x) * width;
+            let fy = handLandmarks[index].y * height;
+            push();
+            drawingContext.shadowBlur = 20;
+            drawingContext.shadowColor = '#ffff00';
+            fill(255, 255, 0);
+            noStroke();
+            circle(fx, fy, 10);
+            pop();
+          }
         }
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
+      }
+
+      // Fallback structural coordination anchoring if hands data falls offline
+      if (!currentLeftTip && leftHandPos) currentLeftTip = leftHandPos;
+      if (!currentRightTip && rightHandPos) currentRightTip = rightHandPos;
+
+      // Handle Spring Interpolation Dynamics for Elastic Threads
+      if (currentLeftTip && currentRightTip) {
+        // Left spring update
+        let forceL = p5.Vector.sub(currentLeftTip, leftHandSpring).mult(SPRING_K);
+        leftVel.add(forceL).mult(SPRING_DAMP);
+        leftHandSpring.add(leftVel);
+
+        // Right spring update
+        let forceR = p5.Vector.sub(currentRightTip, rightHandSpring).mult(SPRING_K);
+        rightVel.add(forceR).mult(SPRING_DAMP);
+        rightHandSpring.add(rightVel);
+
+        // Calculate kinetic configuration metrics
+        let d = dist(leftHandSpring.x, leftHandSpring.y, rightHandSpring.x, rightHandSpring.y);
+        let dynamicWeight = map(d, 0, width, 1, 15);
+        
+        // Render Adaptive Elastic Line
+        push();
+        drawingContext.shadowBlur = 30;
+        
+        // Color transition space based on cyclic oscillation frames
+        let cycle = (frameCount * 0.02) % 3;
+        let threadColor;
+        if (cycle < 1) {
+          threadColor = color(lerpColor(color(0, 255, 242), color(255, 0, 128), cycle));
+        } else if (cycle < 2) {
+          threadColor = color(lerpColor(color(255, 0, 128), color(255, 255, 0), cycle - 1));
+        } else {
+          threadColor = color(lerpColor(color(255, 255, 0), color(0, 255, 242), cycle - 2));
         }
-        @keyframes neon-blink {
-          0%, 100% { opacity: 0.7; filter: brightness(0.9) drop-shadow(0 0 5px rgba(52, 211, 153, 0.3)); }
-          50% { opacity: 1; filter: brightness(1.2) drop-shadow(0 0 20px rgba(52, 211, 153, 0.7)); }
-        }
-        .animate-neon-blink {
-          animation: neon-blink 3s infinite ease-in-out;
-        }
-      `}} />
-    </div>
-  );
-}
+        
+        drawingContext.shadowColor = threadColor.toString();
+        stroke(threadColor);
+        strokeWeight(dynamicWeight);
+        line(leftHandSpring.x, leftHandSpring.y, rightHandSpring.x, rightHandSpring.y);
+        
+        // Additive sub-mesh accentuation paths
+        strokeWeight(1);
+        stroke(255, 255, 255, 150);
+        line(leftHandSpring.x, leftHandSpring.y, rightHandSpring.x, rightHandSpring.y);
+        pop();
+      }
+    }
+
+    function connectJoints(points, j1, j2) {
+      if (points[j1] && points[j2]) {
+        let x1 = (1 - points[j1].x) * width;
+        let y1 = points[j1].y * height;
+        let x2 = (1 - points[j2].x) * width;
+        let y2 = points[j2].y * height;
+        line(x1, y1, x2, y2);
+      }
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+    }
+  </script>
+</body>
+</html>
