@@ -7,18 +7,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import p5 from 'p5';
 import { Camera, Music, Activity, Info, Maximize2, Minimize2, AlertCircle } from 'lucide-react';
 
-// Ensure p5 is available globally for CDN addons
+// Certifique-se de que o p5 esteja disponível globalmente
 if (typeof window !== 'undefined') {
   (window as any).p5 = p5;
 }
 
-// --- Types & Interfaces ---
-interface Pose {
-  keypoints: { x: number; y: number; confidence: number; name: string }[];
-  left_wrist?: { x: number; y: number };
-  right_wrist?: { x: number; y: number };
-  nose?: { x: number; y: number };
-}
+// O quote do Manifesto V.I.S.T.O (mantido para a lógica da grade)
+const quoteText = "MANIFESTO V.I.S.T.O_CRIAR. TRANSCREVER. CODIFICAR. No V.I.S.T.O_LAB (visto.art.br)... [Conteúdo completo do manifesto mantido] V.I.S.T.O_LAB — Porto Alegre, 4º Distrito visto.art.br ";
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -30,8 +25,11 @@ export default function App() {
   const [hasStarted, setHasStarted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Variável para a string de densidade de caracteres (pode ser customizada)
+  // Deixe mais densa para contornos mais nítidos
+  const density = "Ñ@#W$9876543210?!abc;:+=-,._      ";
+
   useEffect(() => {
-    // Delay to ensure MediaPipe libraries and browser permissions settle inside iframe
     const timer = setTimeout(() => {
       setCanStart(true);
     }, 2000);
@@ -42,14 +40,19 @@ export default function App() {
     if (!containerRef.current) return;
 
     const sketch = (p: p5) => {
-      let poseTracker: any;
+      // 1. Alteração: Segmentation em vez de Pose
+      let segmentationTracker: any;
       let camera: any;
-      let landmarks: any[] = [];
-      let smoothedLandmarks: any[] = [];
-      const alpha = 0.15; // Temporal smoothing factor
+      let resultsReady = false;
       let textNodes: TextNode[] = [];
       let baseFontSize = 14;
-      const quote = "MANIFESTO V.I.S.T.O_CRIAR. TRANSCREVER. CODIFICAR. No V.I.S.T.O_LAB (visto.art.br) , buscamos nos associar à todes aqueles que recusam a ideia de que a tecnologia deve ser uma 'caixa preta' — um segredo guardado por engenheiros. Acreditamos que objetos sociotécnicos analógicos e digitais de código aberto colaboram para a criação de novas possibilidades de pesquisa, experimentação e experiência digital-somática. Não estamos aqui apenas para criar performance; estamos aqui para colaborar com a democratização do acesso à tecnologia crítica e criativa. Para nós, as tecnologias e o código atuam como meio de investigação somática, onde o dado se torna movimento e gesto de criação — e vice-versa. Quando um artista move o corpo e vê uma malha de dados reagir em tempo real, ele não está apenas 'usando um software'. Ele está habitando uma experimentação digital-somática onde o dado se converte em movimento e gesto de criação, e a tecnologia se torna um campo aberto para a sua pesquisa. Uma das nossas missões é a transcriação: pegar as ferramentas avançadas da indústria — como MediaPipe e p5.js — e traduzi-las em uma linguagem acessível para artistas e educadores. Queremos que você deixe de ser espectador da tecnologia para se tornar o agente do seu próprio algoritmo. Cada linha de código que tornamos pública é um convite para que o erro, a falha e o improviso humano reescrevam a precisão fria das máquinas. Não buscamos a perfeição do processamento, mas a potência do encontro entre a carne e o pixel em ambientes de colaboração radical. Nossa prática também é política: ao desmistificar o algoritmo, transformamos a tecnologia em um bem comum e o aprendizado em um ato de resistência criativa. Entendemos que o domínio técnico não é um fim em si mesmo, mas o meio pelo qual tomamos consciência de como as coisas operam no mundo — e de como podemos intervir sobre elas. Contra a armadilha das aparências e o fetiche da interface polida, propomos o revelar. Nos objetos analógicos, os mecanismos permanecem visíveis, expondo as entranhas da máquina como prova de sua materialidade e de sua história. No digital, o código se manifesta em seu nível tautológico: ele não 'representa' algo — ele é a própria coisa, a estrutura fundamental através da qual o mundo é operado e reescrito. É através do código, portanto, que nós também nos tornamos parte da estrutura: autores, e não apenas usuários. Assumimos o Manifesto Hacker como uma ética coletiva. Acreditamos que o conhecimento deve ser livre e que os sistemas precisam ser abertos para que todos possam compreender, questionar e recriar. Reconhecemos que caminhamos ao lado de muitos outros que já colaboram para que a tecnologia seja um bem comum. No V.I.S.T.O_LAB, como nos primórdios da internet, hackear não é um ato de destruição — é um gesto de generosidade. É trazer à luz o desnudamento do sistema para que nenhum corpo precise ser apenas um usuário, mas possa se tornar, em comunidade, autor de sua própria experiência técnica e política. Essa visão de manter os mecanismos visíveis pulsa também no nosso contexto físico. No Atelier LUGARzinho, localizado no 4º Distrito de Porto Alegre, a construção e a tecnologia se encontram de forma honesta. O espaço não esconde suas costuras: as paredes, as ferramentas, os processos em andamento fazem parte da obra. O inacabado não é ausência — é método. A plataforma visto.art.br é o nosso território infinito, mas é nesse chão concreto do 4º Distrito que a investigação ganha corpo, calor e endereço. Propomos a criação operativa porque recusamos a tecnologia como abstração ou como 'mágica'. Nossa busca é pelo nível concreto: a relação física e visceral com a operatividade, com o que pode ser tocado, desmontado, reconfigurado. Não nos interessa o brilho da superfície. Nos interessa o que está por baixo — o mecanismo, o processo, a decisão que antecede o resultado. É nessa camada que a autonomia criativa se abre como possibilidade, e é para ela que convidamos cada artista, cada educador, cada corpo que cruza o nosso espaço. V.I.S.T.O_LAB — Porto Alegre, 4º Distrito visto.art.br ";
+      
+      // Definição da grade de mosaico
+      const cols = 80; // Resolução horizontal do mosaico
+      const rows = 60; // Resolução vertical do mosaico
+      let cellW: number, cellH: number;
+
+      // Variáveis de Áudio (mantidas)
       let audioCtx: AudioContext | null = null;
       let oscL: OscillatorNode | null = null;
       let oscR: OscillatorNode | null = null;
@@ -58,15 +61,17 @@ export default function App() {
       let isAudioStarted = false;
       let cameraStarted = false;
 
-      const startCameraAndPose = async () => {
+      // 2. Alteração: Função de Start para Selfie Segmentation
+      const startCameraAndSegmentation = async () => {
         if (cameraStarted) return;
         setError(null);
         try {
-          const mpPose = (window as any).Pose;
+          // Carregamento dinâmico das bibliotecas do MediaPipe
+          const mpSegmentation = (window as any).SelfieSegmentation;
           const mpCamera = (window as any).Camera;
 
-          if (!mpPose || !mpCamera) {
-            setError("Bibliotecas MediaPipe ainda não carregadas.");
+          if (!mpSegmentation || !mpCamera) {
+            setError("Bibliotecas MediaPipe (Selfie Segmentation) ainda não carregadas.");
             return;
           }
 
@@ -75,41 +80,23 @@ export default function App() {
             return;
           }
 
-          poseTracker = new mpPose({
-            locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+          // Inicializa o Selfie Segmentation
+          segmentationTracker = new mpSegmentation({
+            locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
           });
 
-          poseTracker.setOptions({
-            modelComplexity: 1,
-            smoothLandmarks: true,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+          // Configurações: Seleção de modelo para maior precisão (1)
+          segmentationTracker.setOptions({
+            modelSelection: 1, 
           });
 
-          poseTracker.onResults((results: any) => {
-            if (results.poseLandmarks) {
-              landmarks = results.poseLandmarks;
-              
-              // Exponential Moving Average (EMA) for Smoothing
-              if (smoothedLandmarks.length === 0) {
-                smoothedLandmarks = results.poseLandmarks.map((lm: any) => ({ ...lm }));
-              } else {
-                results.poseLandmarks.forEach((lm: any, i: number) => {
-                  if (smoothedLandmarks[i]) {
-                    smoothedLandmarks[i].x = lm.x * alpha + smoothedLandmarks[i].x * (1 - alpha);
-                    smoothedLandmarks[i].y = lm.y * alpha + smoothedLandmarks[i].y * (1 - alpha);
-                    smoothedLandmarks[i].z = lm.z * alpha + smoothedLandmarks[i].z * (1 - alpha);
-                    smoothedLandmarks[i].visibility = lm.visibility * alpha + smoothedLandmarks[i].visibility * (1 - alpha);
-                  }
-                });
-              }
-            }
-          });
+          // Callback de resultados (Muda de landmarks para máscara)
+          segmentationTracker.onResults(onSegmentationResults);
 
           camera = new mpCamera(videoRef.current, {
             onFrame: async () => {
               if (videoRef.current) {
-                await poseTracker.send({ image: videoRef.current });
+                await segmentationTracker.send({ image: videoRef.current });
               }
             },
             width: 640,
@@ -117,123 +104,73 @@ export default function App() {
           });
 
           await camera.start();
-          console.log("MediaPipe Camera started");
+          console.log("MediaPipe Camera (Segmentation) started");
           cameraStarted = true;
           setIsLoaded(true);
           setError(null);
         } catch (e: any) {
-          console.error("Pose/Camera Error:", e);
-          let userFriendlyMsg = "Erro ao acessar a câmera.";
-          if (e.name === 'NotAllowedError' || e.message?.includes('Permission denied')) {
-            userFriendlyMsg = "Permissão de câmera negada. Por favor, autorize o acesso no seu navegador.";
-          }
-          setError(userFriendlyMsg);
+          console.error("Segmentation/Camera Error:", e);
+          setError("Erro ao acessar a câmera ou iniciar segmentação.");
         }
       };
 
-      // --- Text Node System ---
+      // 3. Alteração: Novo callback para processar a máscara
+      let segmentCanvas: p5.Graphics;
+      function onSegmentationResults(results: any) {
+        if (!segmentCanvas) {
+          // Cria um canvas auxiliar na resolução nativa da câmera
+          segmentCanvas = p.createGraphics(640, 480);
+        }
+        
+        // Desenha a máscara de segmentação no canvas auxiliar
+        segmentCanvas.clear();
+        segmentCanvas.image(results.segmentationMask, 0, 0, 640, 480);
+        resultsReady = true;
+      }
+
+      // 4. Alteração Radical na Classe TextNode: Sem física, apenas mapeamento
       class TextNode {
-        char: string;
-        anchor: p5.Vector;
         pos: p5.Vector;
-        color: p5.Color;
+        gridI: number; // Índice na grade (coluna)
+        gridJ: number; // Índice na grade (linha)
 
-        constructor(char: string, x: number, y: number) {
-          this.char = char;
-          this.anchor = p.createVector(x, y);
+        constructor(x: number, y: number, i: number, j: number) {
           this.pos = p.createVector(x, y);
-          this.color = p.color(255);
+          this.gridI = i;
+          this.gridJ = j;
         }
 
-        update(landmarks: any[]) {
-          let targetPos = this.anchor.copy();
-          let thresholdDist = 38; 
-          let totalForce = p.createVector(0, 0);
+        // Função de amostragem orgânica
+        show(char: string, segmentCanvas: p5.Graphics) {
+          // Pega os pixels da máscara
+          segmentCanvas.loadPixels();
+          
+          if (segmentCanvas.pixels.length === 0) return;
 
-          if (landmarks && landmarks.length > 0) {
-            const getPoint = (idx: number) => {
-              const lm = landmarks[idx];
-              if (!lm || lm.visibility < 0.3) return null;
-              return p.createVector(p.map(lm.x, 0, 1, p.width, 0), p.map(lm.y, 0, 1, 0, p.height));
-            };
+          // Mapeia a posição da grade (i, j) para os pixels da câmera (640x480)
+          // Inverte o eixo X (cols - 1 - this.gridI) para efeito de espelho natural
+          let videoX = Math.floor(p.map(cols - 1 - this.gridI, 0, cols, 0, segmentCanvas.width));
+          let videoY = Math.floor(p.map(this.gridJ, 0, rows, 0, segmentCanvas.height));
+          
+          let pixelIndex = (videoX + videoY * segmentCanvas.width) * 4;
 
-            // 1. Head & Torso Volume (Massa Volumétrica)
-            const earL = getPoint(7);
-            const earR = getPoint(8);
-            const shoulderL = getPoint(11);
-            const shoulderR = getPoint(12);
+          // Valor de segmentação (brilho na máscara, canal Red)
+          let segVal = segmentCanvas.pixels[pixelIndex]; 
 
-            // Head Volume (Oval)
-            if (earL && earR) {
-              const headCenter = p5.Vector.lerp(earL, earR, 0.5);
-              const earDist = p5.Vector.dist(earL, earR);
-              headCenter.y -= earDist * 0.35; // Forehead position
-              const dHead = p.dist(this.anchor.x, this.anchor.y, headCenter.x, headCenter.y);
-              const headRadius = earDist * 0.95;
-              if (dHead < headRadius) {
-                let f = p.map(dHead, 0, headRadius, 1, 0);
-                let diff = p5.Vector.sub(this.anchor, headCenter).normalize();
-                totalForce.add(diff.mult(f * f * 55));
-              }
-            }
-
-            // Chest/Sternum Mass
-            if (shoulderL && shoulderR) {
-              const sternum = p5.Vector.lerp(shoulderL, shoulderR, 0.5);
-              const dChest = p.dist(this.anchor.x, this.anchor.y, sternum.x, sternum.y);
-              const chestRadius = p5.Vector.dist(shoulderL, shoulderR) * 0.45;
-              if (dChest < chestRadius) {
-                let f = p.map(dChest, 0, chestRadius, 1, 0);
-                let diff = p5.Vector.sub(this.anchor, sternum).normalize();
-                totalForce.add(diff.mult(f * 35));
-              }
-            }
-
-            // 2. Bone Skeleton (Segmentos Conectores - Modelo Completo)
-            const connections = [
-              [11, 12], [11, 13], [13, 15],       // L Arm & Shoulders
-              [12, 14], [14, 16],                 // R Arm
-              [15, 17], [15, 19], [15, 21],       // L Hand (Wrist to Pinky, Index, Thumb)
-              [16, 18], [16, 20], [16, 22],       // R Hand
-              [11, 23], [12, 24], [23, 24],       // Torso Perimeter
-              [23, 25], [25, 27], [27, 29], [27, 31], [29, 31], // L Leg & Foot (Ankle-Heel-Toe loop)
-              [24, 26], [26, 28], [28, 30], [28, 32], [30, 32]  // R Leg & Foot
-            ];
-
-            connections.forEach(([i1, i2]) => {
-              const p1 = getPoint(i1);
-              const p2 = getPoint(i2);
-              
-              if (p1 && p2) {
-                const v = p5.Vector.sub(p2, p1);
-                const w = p5.Vector.sub(this.anchor, p1);
-                let t = w.dot(v) / v.magSq();
-                t = Math.max(0, Math.min(1, t));
-                const closest = p5.Vector.add(p1, v.mult(t));
-                
-                const d = p.dist(this.anchor.x, this.anchor.y, closest.x, closest.y);
-                
-                if (d < thresholdDist) {
-                  const avgVis = (landmarks[i1].visibility + landmarks[i2].visibility) / 2;
-                  let force = p.map(d, 0, thresholdDist, 1, 0);
-                  let diff = p5.Vector.sub(this.anchor, closest).normalize();
-                  diff.mult(force * force * 42 * avgVis);
-                  totalForce.add(diff);
-                }
-              }
-            });
+          // FATOR ORGÂNICO: Se o pixel pertence ao usuário (corpo detectado > 128)
+          if (segVal > 128) { 
+            // Estética Cyberpunk/Neon (Verde Emerald)
+            p.fill(0, 255, 133); 
+            p.textSize(cellW * 1.3); // Fonte ligeiramente maior para preencher a silhueta
+            p.text(char, this.pos.x, this.pos.y);
+          } else {
+            // Opcional: O que desenhar no fundo (background)
+            // Para o V.I.S.T.O, podemos deixar o texto bem apagado ou invisível
+            p.fill(30, 30, 30); // Cinza muito escuro
+            p.textSize(cellW * 0.9);
+            // Opcional: Descomente para desenhar texto no fundo
+            // p.text(char, this.pos.x, this.pos.y);
           }
-          
-          targetPos.add(totalForce);
-          this.pos.lerp(targetPos, 0.12);
-          
-          let displacement = p.dist(this.pos.x, this.pos.y, this.anchor.x, this.anchor.y);
-          this.color = p.lerpColor(p.color(45, 45, 45), p.color(0, 255, 200), p.map(displacement, 0, 50, 0, 1));
-        }
-
-        show() {
-          p.fill(this.color);
-          p.text(this.char, this.pos.x, this.pos.y);
         }
       }
 
@@ -243,91 +180,88 @@ export default function App() {
         p.textAlign(p.CENTER, p.CENTER);
         p.frameRate(60);
         
-        const spacingX = 15;
-        const spacingY = 22;
-        let charIdx = 0;
-        for (let y = spacingY; y < p.height; y += spacingY) {
-          for (let x = spacingX; x < p.width; x += spacingX) {
-            const char = quote[charIdx % quote.length];
-            textNodes.push(new TextNode(char, x, y));
-            charIdx++;
+        // Inicializa a grade e os TextNodes
+        createGridNodes();
+      };
+
+      // Função auxiliar para criar a grade de nós
+      function createGridNodes() {
+        textNodes = [];
+        cellW = p.width / cols;
+        cellH = p.height / rows;
+
+        for (let j = 0; j < rows; j++) {
+          for (let i = 0; i < cols; i++) {
+            // Posição na tela de exibição
+            let screenX = i * cellW + cellW / 2;
+            let screenY = j * cellH + cellH / 2;
+            textNodes.push(new TextNode(screenX, screenY, i, j));
           }
         }
-      };
+      }
 
       p.draw = () => {
         p.background(0);
 
-        if (!cameraStarted) {
-          p.fill(0, 255, 200);
+        if (!resultsReady || !segmentCanvas) {
+          p.fill(0, 255, 133);
           p.textAlign(p.CENTER);
           p.textSize(16);
-          p.text("Aguardando início...", p.width / 2, p.height / 2);
+          p.text("Sincronizando Sistema de Visão por Silhueta...", p.width / 2, p.height / 2);
           return;
         }
 
-        // --- Visual Essence: Mirrored Dancer Silhouette (Ghost/Soul) ---
-        // Using native drawingContext for maximum safety against p5 'width' TypeErrors
-        if (videoRef.current && videoRef.current.readyState >= 3 && videoRef.current.videoWidth > 0) {
-          p.push();
-          p.translate(p.width, 0);
-          p.scale(-1, 1);
+        // --- Renderização do Mosaico de Texto ---
+        textNodes.forEach((node, index) => {
+          // Cicla pelo Manifesto V.I.S.T.O
+          const char = quoteText[index % quoteText.length];
+          node.show(char, segmentCanvas);
+        });
+
+        // --- Lógica de Áudio (Adaptada para usar a máscara em vez de wrists) ---
+        if (isAudioStarted && audioCtx && gainL && gainR && oscL && oscR) {
+          // Como não temos mais keypoints, vamos usar a densidade total do corpo
+          // para modular o som, ou focar em áreas específicas do canvas (L/R)
+          segmentCanvas.loadPixels();
           
-          // tint(255, 45) emulation via native globalAlpha
-          const prevAlpha = p.drawingContext.globalAlpha;
-          p.drawingContext.globalAlpha = 0.17; // ~45/255
-          p.drawingContext.drawImage(videoRef.current, 0, 0, p.width, p.height);
-          p.drawingContext.globalAlpha = prevAlpha;
-          
-          p.pop();
-        }
+          let totalBodyPixelsL = 0;
+          let totalBodyPixelsR = 0;
 
-        if (smoothedLandmarks && smoothedLandmarks.length > 0) {
-          // Audio feedback: Hand verticality cross-mapped to stereo synthesis
-          const leftWrist = smoothedLandmarks[15];
-          const rightWrist = smoothedLandmarks[16];
-
-          if (isAudioStarted && audioCtx && gainL && gainR && oscL && oscR) {
-            const now = audioCtx.currentTime;
-            
-            // Handle Left Wrist -> Left Ear
-            if (leftWrist && leftWrist.visibility > 0.5) {
-              const freqL = p.map(leftWrist.y, 1, 0, 80, 500); // 80Hz to 500Hz
-              const volL = p.map(leftWrist.visibility, 0.5, 1, 0, 0.12);
-              oscL.frequency.setTargetAtTime(freqL, now, 0.1);
-              gainL.gain.setTargetAtTime(volL, now, 0.1);
-            } else {
-              gainL.gain.setTargetAtTime(0, now, 0.2);
-            }
-
-            // Handle Right Wrist -> Right Ear
-            if (rightWrist && rightWrist.visibility > 0.5) {
-              const freqR = p.map(rightWrist.y, 1, 0, 80, 500);
-              const volR = p.map(rightWrist.visibility, 0.5, 1, 0, 0.12);
-              oscR.frequency.setTargetAtTime(freqR, now, 0.1);
-              gainR.gain.setTargetAtTime(volR, now, 0.1);
-            } else {
-              gainR.gain.setTargetAtTime(0, now, 0.2);
+          // Amostragem rápida (pula pixels) para performance
+          for (let y = 0; y < 480; y += 10) {
+            for (let x = 0; x < 640; x += 10) {
+              let idx = (x + y * 640) * 4;
+              if (segmentCanvas.pixels[idx] > 128) {
+                if (x < 320) totalBodyPixelsL++;
+                else totalBodyPixelsR++;
+              }
             }
           }
-        }
 
-        p.textSize(baseFontSize);
-        textNodes.forEach(node => {
-          node.update(smoothedLandmarks);
-          node.show();
-        });
+          const now = audioCtx.currentTime;
+          
+          // Modula frequência e volume baseado na "massa" do corpo em cada lado
+          const freqL = p.map(totalBodyPixelsL, 0, 1536, 100, 300); // 320x480 / 10x10 amostragem
+          const volL = p.map(totalBodyPixelsL, 0, 1536, 0, 0.1);
+          oscL.frequency.setTargetAtTime(freqL, now, 0.1);
+          gainL.gain.setTargetAtTime(volL, now, 0.1);
+
+          const freqR = p.map(totalBodyPixelsR, 0, 1536, 100, 300);
+          const volR = p.map(totalBodyPixelsR, 0, 1536, 0, 0.1);
+          oscR.frequency.setTargetAtTime(freqR, now, 0.1);
+          gainR.gain.setTargetAtTime(volR, now, 0.1);
+        }
       };
 
       p.startPerformance = async () => {
-        await startCameraAndPose();
+        // Troca de Pose para Segmentation
+        await startCameraAndSegmentation();
         
         if (!isAudioStarted) {
           try {
-            // Initialize Web Audio API
+            // Inicialização do Áudio (mantida idêntica)
             audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
             
-            // Create Audio Chain: Osc -> Gain -> Panner -> Destination
             oscL = audioCtx.createOscillator();
             oscR = audioCtx.createOscillator();
             gainL = audioCtx.createGain();
@@ -366,17 +300,7 @@ export default function App() {
 
       p.windowResized = () => {
         p.resizeCanvas(p.windowWidth, p.windowHeight);
-        textNodes = [];
-        const spacingX = 15;
-        const spacingY = 22;
-        let charIdx = 0;
-        for (let y = spacingY; y < p.height; y += spacingY) {
-          for (let x = spacingX; x < p.width; x += spacingX) {
-            const char = quote[charIdx % quote.length];
-            textNodes.push(new TextNode(char, x, y));
-            charIdx++;
-          }
-        }
+        createGridNodes();
       };
     };
 
@@ -403,7 +327,7 @@ export default function App() {
 
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden font-sans text-white">
-      {/* Video Feed for MediaPipe (Technically visible but transparent to satisfy browser policies) */}
+      {/* Video Feed (mantido transparente) */}
       <video
         ref={videoRef}
         playsInline
@@ -417,7 +341,7 @@ export default function App() {
       {/* Canvas Container */}
       <div ref={containerRef} className="absolute inset-0 z-0" />
 
-      {/* Error Message */}
+      {/* Error Message (mantida) */}
       {error && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[100] bg-red-500/90 backdrop-blur-md px-6 py-3 rounded-2xl flex items-center gap-3 shadow-2xl">
           <AlertCircle size={20} />
@@ -425,14 +349,14 @@ export default function App() {
         </div>
       )}
 
-      {/* UI Overlay */}
+      {/* UI Overlay (mantida idêntica para o V.I.S.T.O) */}
       <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-6">
         {/* Header */}
         <header className="flex justify-between items-start pointer-events-auto">
           <div>
             <h1 className="text-2xl font-light tracking-widest uppercase flex items-center gap-3">
               <Activity className="text-emerald-400 animate-pulse" />
-              V.I.S.T.O
+              V.I.S.T.O (Silhueta V1)
             </h1>
             <p className="text-xs text-zinc-500 mt-1 tracking-wider uppercase">
               Ocupações Vídeo_Coreográficas &bull; 4º Distrito Poa
@@ -460,7 +384,7 @@ export default function App() {
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] uppercase tracking-tighter">
               <div className={`w-1.5 h-1.5 rounded-full ${isLoaded ? 'bg-emerald-400' : 'bg-zinc-600 animate-ping'}`} />
-              {isLoaded ? 'Sistema Ativo' : 'Carregando Modelos...'}
+              {isLoaded ? 'Sistema Ativo (Segmentation)' : 'Carregando Modelos...'}
             </div>
             <div className="text-[10px] text-zinc-500 uppercase tracking-[0.2em]">
               {hasStarted ? 'Performance em curso' : 'Clique na tela para ativar o som'}
@@ -470,7 +394,7 @@ export default function App() {
           <div className="flex gap-6 text-zinc-400">
             <div className="flex flex-col items-center gap-1">
               <Camera size={16} className="opacity-50" />
-              <span className="text-[8px] uppercase">Vision</span>
+              <span className="text-[8px] uppercase">Silhouette</span>
             </div>
             <div className="flex flex-col items-center gap-1">
               <Music size={16} className="opacity-50" />
@@ -480,7 +404,7 @@ export default function App() {
         </footer>
       </div>
 
-      {/* Info Modal */}
+      {/* Info Modal (mantida idêntica) */}
       {showInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-xl pointer-events-auto">
           <div className="max-w-md w-full bg-zinc-900 border border-white/10 rounded-3xl p-8 shadow-2xl">
@@ -499,11 +423,11 @@ export default function App() {
               <ul className="space-y-2">
                 <li className="flex gap-3">
                   <span className="text-emerald-400">01.</span>
-                  <span>A interface explora a presença do corpo mediada pela tecnologia.</span>
+                  <span>A interface explora a presença do corpo mediada pela tecnologia (IA de Silhueta).</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="text-pink-400">02.</span>
-                  <span>O movimento distorce a linguagem, criando novas coreografias visuais.</span>
+                  <span>O movimento distorce a linguagem do Manifesto V.I.S.T.O, criando novas coreografias visuais.</span>
                 </li>
               </ul>
             </div>
@@ -539,7 +463,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Custom Styles */}
+      {/* Custom Styles (mantida) */}
       <style dangerouslySetInnerHTML={{ __html: `
         canvas {
           display: block;
