@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-// Declarações para o TypeScript não reclamar das variáveis globais injetadas pelos scripts externos
+// Declarações para o TypeScript
 declare global {
   interface Window {
     p5: any;
@@ -13,39 +13,41 @@ declare global {
 
 export default function App() {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const [isLibraryReady, setIsLibraryReady] = useState(false);
 
+  // Módulo 1: Garante a injeção e carregamento estrito dos scripts no DOM
   useEffect(() => {
-    let p5Instance: any;
+    const loadScript = (src: string) => {
+      return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) return resolve(true);
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = false; // Carregamento síncrono ordenado
+        script.onload = () => resolve(true);
+        script.onerror = () => reject();
+        document.head.appendChild(script);
+      });
+    };
 
-    // Função para carregar os scripts externos dinamicamente no Head da aplicação
-    const loadScripts = async () => {
-      const loadScript = (src: string) => {
-        return new Promise((resolve, reject) => {
-          if (document.querySelector(`script[src="${src}"]`)) return resolve(true);
-          const script = document.createElement('script');
-          script.src = src;
-          script.async = true;
-          script.onload = () => resolve(true);
-          script.onerror = () => reject();
-          document.head.appendChild(script);
-        });
-      };
-
+    const initializeDependencies = async () => {
       try {
-        // Carrega o p5 e o MediaPipe Tasks Vision
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js');
         await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/vision_bundle.js');
-        
-        // Inicializa o sketch do p5 no modo "Instance Mode" para não poluir o escopo global do React
-        if (window.p5) {
-          p5Instance = new window.p5(sketch, canvasContainerRef.current);
-        }
+        setIsLibraryReady(true);
       } catch (err) {
-        console.error("Erro ao carregar dependências visuais:", err);
+        console.error("Falha Crítica no carregamento das CDN's visuais:", err);
       }
     };
 
-    // --- SEU CÓDIGO GENERATIVO ADAPTADO PARA MODO DE INSTÂNCIA DO p5 ---
+    initializeDependencies();
+  }, []);
+
+  // Módulo 2: Só roda o p5 se o Módulo 1 der o sinal verde (isLibraryReady === true)
+  useEffect(() => {
+    if (!isLibraryReady || !window.p5) return;
+
+    let p5Instance: any;
+
     const sketch = (p: any) => {
       let video: any;
       let poseLandmarker: any;
@@ -66,30 +68,34 @@ export default function App() {
       let leftVel: any, rightVel: any;
 
       const initializeMediaPipe = async () => {
-        const vision = await window.FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
-        );
+        try {
+          const vision = await window.FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+          );
 
-        poseLandmarker = await window.PoseLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`, delegate: "GPU" },
-          runningMode: "VIDEO", outputBytestream: false
-        });
+          poseLandmarker = await window.PoseLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`, delegate: "GPU" },
+            runningMode: "VIDEO", outputBytestream: false
+          });
 
-        handLandmarker = await window.HandLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
-          runningMode: "VIDEO", numHands: 2
-        });
+          handLandmarker = await window.HandLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+            runningMode: "VIDEO", numHands: 2
+          });
 
-        imageSegmenter = await window.ImageSegmenter.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task`, delegate: "GPU" },
-          runningMode: "VIDEO", outputCategoryMask: true
-        });
+          imageSegmenter = await window.ImageSegmenter.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task`, delegate: "GPU" },
+            runningMode: "VIDEO", outputCategoryMask: true
+          });
 
-        isModelsLoaded = true;
-        const statusEl = document.getElementById('loading-status');
-        if (statusEl) {
-          statusEl.innerText = "SYSTEMS ONLINE // INTERACTIVE CONTEXT READY";
-          setTimeout(() => statusEl.style.display = 'none', 3000);
+          isModelsLoaded = true;
+          const statusEl = document.getElementById('loading-status');
+          if (statusEl) {
+            statusEl.innerText = "SYSTEMS ONLINE // INTERACTIVE CONTEXT READY";
+            setTimeout(() => statusEl.style.display = 'none', 3000);
+          }
+        } catch (error) {
+          console.error("Erro ao carregar modelos do MediaPipe:", error);
         }
       };
 
@@ -352,15 +358,14 @@ export default function App() {
       };
     };
 
-    loadScripts();
+    p5Instance = new window.p5(sketch, canvasContainerRef.current);
 
-    // Cleanup para quando o componente desmontar
     return () => {
       if (p5Instance) {
         p5Instance.remove();
       }
     };
-  }, []);
+  }, [isLibraryReady]);
 
   return (
     <div style={{
@@ -420,7 +425,7 @@ export default function App() {
         textShadow: '0 0 5px #ff0080',
         zIndex: 10
       }}>
-        INITIALIZING COMPUTER VISION SYSTEMS...
+        {isLibraryReady ? "INITIALIZING COMPUTER VISION SYSTEMS..." : "LOADING GENERATIVE FRAMEWORKS..."}
       </div>
 
       {/* Container onde o p5.js vai injetar o canvas */}
