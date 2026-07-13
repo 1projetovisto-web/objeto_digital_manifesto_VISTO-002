@@ -48,19 +48,25 @@ export default function App() {
 
     let p5Instance: any;
 
+    // Referências guardadas fora do sketch para poder limpar no cleanup do useEffect
+    let poseLandmarkerRef: any = null;
+    let handLandmarkerRef: any = null;
+    let imageSegmenterRef: any = null;
+    let videoRef: any = null;
+
     const sketch = (p: any) => {
       let video: any;
       let poseLandmarker: any;
       let handLandmarker: any;
       let imageSegmenter: any;
-      
+
       let poseResults: any = null;
       let handResults: any = null;
       let segmentationMask: any = null;
-      
+
       let isModelsLoaded = false;
       let smoothedBlobPoints: any[] = [];
-      
+
       let leftHandSpring: any = null;
       let rightHandSpring: any = null;
       const SPRING_K = 0.15;
@@ -75,7 +81,7 @@ export default function App() {
 
           poseLandmarker = await window.PoseLandmarker.createFromOptions(vision, {
             baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`, delegate: "GPU" },
-            runningMode: "VIDEO", outputBytestream: false
+            runningMode: "VIDEO"
           });
 
           handLandmarker = await window.HandLandmarker.createFromOptions(vision, {
@@ -87,6 +93,11 @@ export default function App() {
             baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task`, delegate: "GPU" },
             runningMode: "VIDEO", outputCategoryMask: true
           });
+
+          // Guarda referências para cleanup externo (fora do escopo do p5)
+          poseLandmarkerRef = poseLandmarker;
+          handLandmarkerRef = handLandmarker;
+          imageSegmenterRef = imageSegmenter;
 
           isModelsLoaded = true;
           const statusEl = document.getElementById('loading-status');
@@ -100,19 +111,20 @@ export default function App() {
       };
 
       p.setup = () => {
-        const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
-        
+        p.createCanvas(p.windowWidth, p.windowHeight);
+
         video = p.createCapture(p.VIDEO, () => {
           initializeMediaPipe();
         });
         video.size(640, 480);
         video.hide();
+        videoRef = video;
 
         leftVel = p.createVector(0, 0);
         rightVel = p.createVector(0, 0);
         leftHandSpring = p.createVector(p.width / 2, p.height / 2);
         rightHandSpring = p.createVector(p.width / 2, p.height / 2);
-        
+
         for (let i = 0; i < 40; i++) {
           smoothedBlobPoints.push(p.createVector(p.width / 2, p.height / 2));
         }
@@ -120,24 +132,30 @@ export default function App() {
 
       p.draw = () => {
         p.background(5, 5, 12);
-        
+
         if (!video || video.width === 0) return;
 
         if (isModelsLoaded && video.elt.readyState >= 3) {
-          const timestamp = p.performance.now();
-          poseLandmarker.detectForVideo(video.elt, timestamp, (results: any) => { poseResults = results; });
-          handLandmarker.detectForVideo(video.elt, timestamp, (results: any) => { handResults = results; });
-          imageSegmenter.segmentForVideo(video.elt, timestamp, (results: any) => { 
-            segmentationMask = results.categoryMask; 
+          // FIX: performance.now() é API global do browser, não p.performance
+          const timestamp = performance.now();
+
+          // FIX: detectForVideo do PoseLandmarker/HandLandmarker em modo VIDEO
+          // é SÍNCRONO e retorna o resultado — não aceita callback.
+          poseResults = poseLandmarker.detectForVideo(video.elt, timestamp);
+          handResults = handLandmarker.detectForVideo(video.elt, timestamp);
+
+          // segmentForVideo do ImageSegmenter SIM usa callback.
+          imageSegmenter.segmentForVideo(video.elt, timestamp, (result: any) => {
+            // FIX: fecha a máscara anterior antes de sobrescrever, evitando
+            // vazamento de memória WASM/GPU acumulado a cada frame.
+            if (segmentationMask && segmentationMask !== result.categoryMask) {
+              segmentationMask.close();
+            }
+            segmentationMask = result.categoryMask;
           });
         }
 
-        p.push();
-        p.translate(p.width, 0);
-        p.scale(-1, 1);
-        p.tint(255, 65);
-        p.image(video, 0, 0, p.width, p.height);
-        p.pop();
+        drawVideoBackground();
 
         if (segmentationMask) {
           generateBlobFromMask(segmentationMask);
@@ -146,17 +164,38 @@ export default function App() {
         renderGenerativeSystems();
       };
 
+      // FIX: renderiza o vídeo em modo "cover" (preenche a tela sem distorcer),
+      // em vez de esticar 640x480 para o tamanho arbitrário da janela.
+      const drawVideoBackground = () => {
+        const vw = video.width;
+        const vh = video.height;
+        if (!vw || !vh) return;
+
+        const scale = Math.max(p.width / vw, p.height / vh);
+        const sw = vw * scale;
+        const sh = vh * scale;
+        const ox = (p.width - sw) / 2;
+        const oy = (p.height - sh) / 2;
+
+        p.push();
+        p.translate(p.width, 0);
+        p.scale(-1, 1);
+        p.tint(255, 65);
+        p.image(video, p.width - (ox + sw), oy, sw, sh);
+        p.pop();
+      };
+
       const generateBlobFromMask = (mask: any) => {
         const maskWidth = mask.width;
         const maskHeight = mask.height;
         const maskData = mask.getAsUint8Array();
-        
+
         let rawPoints = [];
-        const numAngles = 40; 
-        
+        const numAngles = 40;
+
         let centerX = p.width / 2;
         let centerY = p.height / 2;
-        
+
         if (poseResults && poseResults.landmarks && poseResults.landmarks[0] && poseResults.landmarks[0][0]) {
           centerX = (1 - poseResults.landmarks[0][0].x) * p.width;
           centerY = poseResults.landmarks[0][0].y * p.height;
@@ -166,17 +205,17 @@ export default function App() {
           let angle = (p.TWO_PI / numAngles) * i;
           let maxRadius = p.max(p.width, p.height) * 0.5;
           let foundEdge = false;
-          
+
           for (let r = 10; r < maxRadius; r += 15) {
             let checkX = centerX + p.cos(angle) * r;
             let checkY = centerY + p.sin(angle) * r;
-            
+
             let maskImgX = p.floor(p.map(checkX, 0, p.width, maskWidth, 0));
             let maskImgY = p.floor(p.map(checkY, 0, p.height, 0, maskHeight));
-            
+
             if (maskImgX >= 0 && maskImgX < maskWidth && maskImgY >= 0 && maskImgY < maskHeight) {
               let index = maskImgY * maskWidth + maskImgX;
-              if (maskData[index] === 0) { 
+              if (maskData[index] === 0) {
                 rawPoints.push(p.createVector(checkX, checkY));
                 foundEdge = true;
                 break;
@@ -196,11 +235,11 @@ export default function App() {
         p.push();
         p.noFill();
         p.strokeWeight(4);
-        
+
         p.drawingContext.shadowBlur = 25;
         p.drawingContext.shadowColor = '#00fff2';
         p.stroke(0, 255, 242, 220);
-        
+
         let wave = p.sin(p.frameCount * 0.04) * 6;
 
         p.beginShape();
@@ -215,7 +254,7 @@ export default function App() {
           p.curveVertex(pt.x + p.cos(i) * wave, pt.y + p.sin(i) * wave);
         }
         p.endShape();
-        
+
         p.drawingContext.shadowBlur = 10;
         p.strokeWeight(0.5);
         p.stroke(255, 0, 128, 70);
@@ -232,7 +271,7 @@ export default function App() {
         if (poseResults && poseResults.landmarks) {
           for (const landmarks of poseResults.landmarks) {
             const structuralJoints = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
-            
+
             p.strokeWeight(1.5);
             p.stroke(255, 255, 255, 80);
             connectJoints(landmarks, 11, 12);
@@ -249,7 +288,7 @@ export default function App() {
             for (let i = 0; i < landmarks.length; i++) {
               let x = (1 - landmarks[i].x) * p.width;
               let y = landmarks[i].y * p.height;
-              
+
               p.push();
               p.drawingContext.shadowBlur = 15;
               if (structuralJoints.includes(i)) {
@@ -276,12 +315,12 @@ export default function App() {
         if (handResults && handResults.landmarks) {
           for (let h = 0; h < handResults.landmarks.length; h++) {
             let handLandmarks = handResults.landmarks[h];
-            let handedness = handResults.handednesses[h][0].categoryName; 
-            let isVisualRight = handedness === "Left"; 
-            
+            let handedness = handResults.handednesses[h][0].categoryName;
+            let isVisualRight = handedness === "Left";
+
             let tipX = (1 - handLandmarks[8].x) * p.width;
             let tipY = handLandmarks[8].y * p.height;
-            
+
             if (isVisualRight) {
               currentRightTip = p.createVector(tipX, tipY);
             } else {
@@ -317,10 +356,10 @@ export default function App() {
 
           let d = p.dist(leftHandSpring.x, leftHandSpring.y, rightHandSpring.x, rightHandSpring.y);
           let dynamicWeight = p.map(d, 0, p.width, 1, 15);
-          
+
           p.push();
           p.drawingContext.shadowBlur = 30;
-          
+
           let cycle = (p.frameCount * 0.02) % 3;
           let threadColor;
           if (cycle < 1) {
@@ -330,12 +369,12 @@ export default function App() {
           } else {
             threadColor = p.color(p.lerpColor(p.color(255, 255, 0), p.color(0, 255, 242), cycle - 2));
           }
-          
+
           p.drawingContext.shadowColor = threadColor.toString();
           p.stroke(threadColor);
           p.strokeWeight(dynamicWeight);
           p.line(leftHandSpring.x, leftHandSpring.y, rightHandSpring.x, rightHandSpring.y);
-          
+
           p.strokeWeight(1);
           p.stroke(255, 255, 255, 150);
           p.line(leftHandSpring.x, leftHandSpring.y, rightHandSpring.x, rightHandSpring.y);
@@ -361,6 +400,18 @@ export default function App() {
     p5Instance = new window.p5(sketch, canvasContainerRef.current);
 
     return () => {
+      // FIX: libera os modelos MediaPipe (WASM/GPU) e para a câmera
+      // antes de remover o sketch — evita vazamento de memória e
+      // requisições de câmera duplicadas (ex: React StrictMode).
+      poseLandmarkerRef?.close?.();
+      handLandmarkerRef?.close?.();
+      imageSegmenterRef?.close?.();
+
+      if (videoRef?.elt?.srcObject) {
+        const stream = videoRef.elt.srcObject as MediaStream;
+        stream.getTracks().forEach((track) => track.stop());
+      }
+
       if (p5Instance) {
         p5Instance.remove();
       }
@@ -397,10 +448,10 @@ export default function App() {
         maxWidth: '600px',
         zIndex: 10
       }}>
-        <img 
-          id="logo" 
-          src="https://res.cloudinary.com/dwx6kf2f6/image/upload/v1780873975/favicon_aebdg1.jpg" 
-          alt="V.I.S.T.O Logo" 
+        <img
+          id="logo"
+          src="https://res.cloudinary.com/dwx6kf2f6/image/upload/v1780873975/favicon_aebdg1.jpg"
+          alt="V.I.S.T.O Logo"
           style={{ width: '60px', height: '60px', borderRadius: '4px', border: '1px solid rgba(255, 0, 128, 0.5)', objectFit: 'cover' }}
         />
         <div id="title-container" style={{ display: 'flex', flexDirection: 'column' }}>
