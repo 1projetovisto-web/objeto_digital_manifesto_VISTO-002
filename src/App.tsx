@@ -31,24 +31,26 @@ export default function App() {
 
     const initializeDependencies = async () => {
       try {
+        console.log("[V.I.S.T.O] Carregando bibliotecas essenciais via CDN...");
         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js');
         await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/vision_bundle.js');
+        console.log("[V.I.S.T.O] CDNs injetadas com sucesso.");
         setIsLibraryReady(true);
       } catch (err) {
-        console.error("Falha Crítica no carregamento das CDN's visuais:", err);
+        console.error("[V.I.S.T.O] Falha Crítica no carregamento das CDN's visuais:", err);
       }
     };
 
     initializeDependencies();
   }, []);
 
-  // Módulo 2: Só roda o p5 se o Módulo 1 der o sinal verde (isLibraryReady === true)
+  // Módulo 2: Gerenciamento do ciclo de vida do sketch p5.js e MediaPipe
   useEffect(() => {
     if (!isLibraryReady || !window.p5) return;
 
     let p5Instance: any;
 
-    // Referências guardadas fora do sketch para poder limpar no cleanup do useEffect
+    // Referências limpas salvas fora do loop p5 para descarte ativo no cleanup
     let poseLandmarkerRef: any = null;
     let handLandmarkerRef: any = null;
     let imageSegmenterRef: any = null;
@@ -65,7 +67,7 @@ export default function App() {
       let segmentationMask: any = null;
 
       let isModelsLoaded = false;
-      let isProcessing = false; // Trava de concorrência assíncrona para evitar quebra no WASM/GPU
+      let isProcessing = false; // Trava contra sobrecarga de frames na GPU
       let smoothedBlobPoints: any[] = [];
 
       let leftHandSpring: any = null;
@@ -76,47 +78,58 @@ export default function App() {
 
       const initializeMediaPipe = async () => {
         try {
+          console.log("[V.I.S.T.O] Resolvendo arquivos de suporte WebAssembly...");
+          // URL alternativa confiável para evitar travamentos de CORS internos no resolvedor
           const vision = await window.FilesetResolver.forVisionTasks(
             "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
           );
 
+          console.log("[V.I.S.T.O] Alocando instâncias dos modelos na GPU...");
+          
           poseLandmarker = await window.PoseLandmarker.createFromOptions(vision, {
             baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`, delegate: "GPU" },
             runningMode: "VIDEO"
           });
+          console.log("[V.I.S.T.O] Model 1/3: PoseLandmarker pronto.");
 
           handLandmarker = await window.HandLandmarker.createFromOptions(vision, {
             baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
             runningMode: "VIDEO", numHands: 2
           });
+          console.log("[V.I.S.T.O] Model 2/3: HandLandmarker pronto.");
 
           imageSegmenter = await window.ImageSegmenter.createFromOptions(vision, {
             baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task`, delegate: "GPU" },
             runningMode: "VIDEO", outputCategoryMask: true
           });
+          console.log("[V.I.S.T.O] Model 3/3: ImageSegmenter pronto.");
 
-          // Guarda referências para cleanup externo (fora do escopo do p5)
+          // Exportação de referências para o garbage collector do unmount
           poseLandmarkerRef = poseLandmarker;
           handLandmarkerRef = handLandmarker;
           imageSegmenterRef = imageSegmenter;
 
           isModelsLoaded = true;
+          console.log("[V.I.S.T.O] Todos os pipelines de visão estão operacionais.");
+          
           const statusEl = document.getElementById('loading-status');
           if (statusEl) {
             statusEl.innerText = "SYSTEMS ONLINE // INTERACTIVE CONTEXT READY";
             setTimeout(() => statusEl.style.display = 'none', 3000);
           }
         } catch (error) {
-          console.error("Erro ao carregar modelos do MediaPipe:", error);
+          console.error("[V.I.S.T.O] Falha fatal na inicialização do MediaPipe:", error);
           const statusEl = document.getElementById('loading-status');
-          if (statusEl) statusEl.innerText = "CRITICAL ERROR: INITIALIZATION FAILED";
+          if (statusEl) statusEl.innerText = "CRITICAL ERROR: GPU INTERFACE TIMEOUT";
         }
       };
 
       p.setup = () => {
         p.createCanvas(p.windowWidth, p.windowHeight);
 
+        console.log("[V.I.S.T.O] Inicializando captura de hardware da câmera...");
         video = p.createCapture(p.VIDEO, () => {
+          console.log("[V.I.S.T.O] Hardware de vídeo respondendo. Iniciando visão computacional...");
           initializeMediaPipe();
         });
         video.size(640, 480);
@@ -138,27 +151,25 @@ export default function App() {
 
         if (!video || video.width === 0) return;
 
-        // Processamento assíncrono controlado por pipeline sequencial
+        // Processamento assíncrono sequencial e seguro contra concorrência e drop de frames
         if (isModelsLoaded && video.elt.readyState >= 3 && !isProcessing) {
           isProcessing = true;
           const timestamp = performance.now();
 
           try {
-            // Chamadas síncronas sequenciais da API do MediaPipe Tasks Vision em modo VIDEO
             poseResults = poseLandmarker.detectForVideo(video.elt, timestamp);
             handResults = handLandmarker.detectForVideo(video.elt, timestamp);
 
-            // Chamada assíncrona baseada em callback do ImageSegmenter
             imageSegmenter.segmentForVideo(video.elt, timestamp, (result: any) => {
               if (segmentationMask && segmentationMask !== result.categoryMask) {
-                segmentationMask.close(); // Coleta de lixo ativa da VRAM/WASM
+                segmentationMask.close(); // Limpeza explícita da memória Heap da GPU/Wasm
               }
               segmentationMask = result.categoryMask;
-              isProcessing = false; // Libera pipeline de inferência para o próximo frame disponível
+              isProcessing = false; // Desbloqueia o pipeline para processar o próximo frame disponível
             });
           } catch (err) {
-            console.warn("MediaPipe Frame Drop // Ignorado para evitar crash de GPU:", err);
-            isProcessing = false; // Garante que falhas pontuais de frame não travem o loop
+            console.warn("[V.I.S.T.O] Frame drop ignorado para proteger barramento WebGL:", err);
+            isProcessing = false; // Garante o destravamento imediato do loop de desenho
           }
         }
 
@@ -176,7 +187,7 @@ export default function App() {
         const vh = video.height;
         if (!vw || !vh) return;
 
-        // Renderização em "cover" mantendo o aspect ratio sem distorcer o sinal da câmera
+        // Renderização em aspect-ratio inteligente "cover" sem distorção anamórfica
         const scale = Math.max(p.width / vw, p.height / vh);
         const sw = vw * scale;
         const sh = vh * scale;
@@ -185,7 +196,7 @@ export default function App() {
 
         p.push();
         p.translate(p.width, 0);
-        p.scale(-1, 1); // Espelhamento correto para o pátio/instalação
+        p.scale(-1, 1); // Correção de espelhamento interativo para performance em palco/pátio
         p.tint(255, 65);
         p.image(video, p.width - (ox + sw), oy, sw, sh);
         p.pop();
@@ -199,7 +210,7 @@ export default function App() {
         try {
           maskData = mask.getAsUint8Array();
         } catch (e) {
-          return; // Previne quebras se a máscara fechar durante o ciclo de leitura de pixels
+          return; // Previne exceções de leitura de ponteiros de memória já destruídos no frame
         }
 
         let rawPoints = [];
@@ -421,7 +432,7 @@ export default function App() {
     p5Instance = new window.p5(sketch, canvasContainerRef.current);
 
     return () => {
-      // Destruição síncrona estrita dos alocadores WebASM da GPU e encerramento de hardware de captura
+      console.log("[V.I.S.T.O] Executando rotina restrita de unmount de hardware e VRAM...");
       poseLandmarkerRef?.close?.();
       handLandmarkerRef?.close?.();
       imageSegmenterRef?.close?.();
@@ -495,17 +506,4 @@ export default function App() {
         textShadow: '0 0 5px #ff0080',
         zIndex: 10
       }}>
-        {isLibraryReady ? "INITIALIZING COMPUTER VISION SYSTEMS..." : "LOADING GENERATIVE FRAMEWORKS..."}
-      </div>
-
-      {/* Container onde o p5.js vai injetar o canvas */}
-      <div ref={canvasContainerRef} id="canvas-container" style={{
-        width: '100vw',
-        height: '100vh',
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center'
-      }}></div>
-    </div>
-  );
-}
+        {isLibraryReady ? "INITIALIZING COMPUTER VISION SYSTEMS..." : "
