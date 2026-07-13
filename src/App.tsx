@@ -65,6 +65,7 @@ export default function App() {
       let segmentationMask: any = null;
 
       let isModelsLoaded = false;
+      let isProcessing = false; // Trava de concorrência assíncrona para evitar quebra no WASM/GPU
       let smoothedBlobPoints: any[] = [];
 
       let leftHandSpring: any = null;
@@ -107,6 +108,8 @@ export default function App() {
           }
         } catch (error) {
           console.error("Erro ao carregar modelos do MediaPipe:", error);
+          const statusEl = document.getElementById('loading-status');
+          if (statusEl) statusEl.innerText = "CRITICAL ERROR: INITIALIZATION FAILED";
         }
       };
 
@@ -135,24 +138,28 @@ export default function App() {
 
         if (!video || video.width === 0) return;
 
-        if (isModelsLoaded && video.elt.readyState >= 3) {
-          // FIX: performance.now() é API global do browser, não p.performance
+        // Processamento assíncrono controlado por pipeline sequencial
+        if (isModelsLoaded && video.elt.readyState >= 3 && !isProcessing) {
+          isProcessing = true;
           const timestamp = performance.now();
 
-          // FIX: detectForVideo do PoseLandmarker/HandLandmarker em modo VIDEO
-          // é SÍNCRONO e retorna o resultado — não aceita callback.
-          poseResults = poseLandmarker.detectForVideo(video.elt, timestamp);
-          handResults = handLandmarker.detectForVideo(video.elt, timestamp);
+          try {
+            // Chamadas síncronas sequenciais da API do MediaPipe Tasks Vision em modo VIDEO
+            poseResults = poseLandmarker.detectForVideo(video.elt, timestamp);
+            handResults = handLandmarker.detectForVideo(video.elt, timestamp);
 
-          // segmentForVideo do ImageSegmenter SIM usa callback.
-          imageSegmenter.segmentForVideo(video.elt, timestamp, (result: any) => {
-            // FIX: fecha a máscara anterior antes de sobrescrever, evitando
-            // vazamento de memória WASM/GPU acumulado a cada frame.
-            if (segmentationMask && segmentationMask !== result.categoryMask) {
-              segmentationMask.close();
-            }
-            segmentationMask = result.categoryMask;
-          });
+            // Chamada assíncrona baseada em callback do ImageSegmenter
+            imageSegmenter.segmentForVideo(video.elt, timestamp, (result: any) => {
+              if (segmentationMask && segmentationMask !== result.categoryMask) {
+                segmentationMask.close(); // Coleta de lixo ativa da VRAM/WASM
+              }
+              segmentationMask = result.categoryMask;
+              isProcessing = false; // Libera pipeline de inferência para o próximo frame disponível
+            });
+          } catch (err) {
+            console.warn("MediaPipe Frame Drop // Ignorado para evitar crash de GPU:", err);
+            isProcessing = false; // Garante que falhas pontuais de frame não travem o loop
+          }
         }
 
         drawVideoBackground();
@@ -164,13 +171,12 @@ export default function App() {
         renderGenerativeSystems();
       };
 
-      // FIX: renderiza o vídeo em modo "cover" (preenche a tela sem distorcer),
-      // em vez de esticar 640x480 para o tamanho arbitrário da janela.
       const drawVideoBackground = () => {
         const vw = video.width;
         const vh = video.height;
         if (!vw || !vh) return;
 
+        // Renderização em "cover" mantendo o aspect ratio sem distorcer o sinal da câmera
         const scale = Math.max(p.width / vw, p.height / vh);
         const sw = vw * scale;
         const sh = vh * scale;
@@ -179,7 +185,7 @@ export default function App() {
 
         p.push();
         p.translate(p.width, 0);
-        p.scale(-1, 1);
+        p.scale(-1, 1); // Espelhamento correto para o pátio/instalação
         p.tint(255, 65);
         p.image(video, p.width - (ox + sw), oy, sw, sh);
         p.pop();
@@ -188,7 +194,13 @@ export default function App() {
       const generateBlobFromMask = (mask: any) => {
         const maskWidth = mask.width;
         const maskHeight = mask.height;
-        const maskData = mask.getAsUint8Array();
+        let maskData;
+
+        try {
+          maskData = mask.getAsUint8Array();
+        } catch (e) {
+          return; // Previne quebras se a máscara fechar durante o ciclo de leitura de pixels
+        }
 
         let rawPoints = [];
         const numAngles = 40;
@@ -228,8 +240,10 @@ export default function App() {
         }
 
         for (let i = 0; i < numAngles; i++) {
-          smoothedBlobPoints[i].x = p.lerp(smoothedBlobPoints[i].x, rawPoints[i].x, 0.15);
-          smoothedBlobPoints[i].y = p.lerp(smoothedBlobPoints[i].y, rawPoints[i].y, 0.15);
+          if (rawPoints[i]) {
+            smoothedBlobPoints[i].x = p.lerp(smoothedBlobPoints[i].x, rawPoints[i].x, 0.15);
+            smoothedBlobPoints[i].y = p.lerp(smoothedBlobPoints[i].y, rawPoints[i].y, 0.15);
+          }
         }
 
         p.push();
@@ -282,10 +296,13 @@ export default function App() {
             connectJoints(landmarks, 23, 25); connectJoints(landmarks, 25, 27);
             connectJoints(landmarks, 24, 26); connectJoints(landmarks, 26, 28);
 
-            leftHandPos = p.createVector((1 - landmarks[15].x) * p.width, landmarks[15].y * p.height);
-            rightHandPos = p.createVector((1 - landmarks[16].x) * p.width, landmarks[16].y * p.height);
+            if (landmarks[15] && landmarks[16]) {
+              leftHandPos = p.createVector((1 - landmarks[15].x) * p.width, landmarks[15].y * p.height);
+              rightHandPos = p.createVector((1 - landmarks[16].x) * p.width, landmarks[16].y * p.height);
+            }
 
             for (let i = 0; i < landmarks.length; i++) {
+              if (!landmarks[i]) continue;
               let x = (1 - landmarks[i].x) * p.width;
               let y = landmarks[i].y * p.height;
 
@@ -315,29 +332,33 @@ export default function App() {
         if (handResults && handResults.landmarks) {
           for (let h = 0; h < handResults.landmarks.length; h++) {
             let handLandmarks = handResults.landmarks[h];
-            let handedness = handResults.handednesses[h][0].categoryName;
+            let handedness = handResults.handednesses?.[h]?.[0]?.categoryName;
             let isVisualRight = handedness === "Left";
 
-            let tipX = (1 - handLandmarks[8].x) * p.width;
-            let tipY = handLandmarks[8].y * p.height;
+            if (handLandmarks && handLandmarks[8]) {
+              let tipX = (1 - handLandmarks[8].x) * p.width;
+              let tipY = handLandmarks[8].y * p.height;
 
-            if (isVisualRight) {
-              currentRightTip = p.createVector(tipX, tipY);
-            } else {
-              currentLeftTip = p.createVector(tipX, tipY);
+              if (isVisualRight) {
+                currentRightTip = p.createVector(tipX, tipY);
+              } else {
+                currentLeftTip = p.createVector(tipX, tipY);
+              }
             }
 
             const fingerTips = [4, 8, 12, 16, 20];
             for (let index of fingerTips) {
-              let fx = (1 - handLandmarks[index].x) * p.width;
-              let fy = handLandmarks[index].y * p.height;
-              p.push();
-              p.drawingContext.shadowBlur = 20;
-              p.drawingContext.shadowColor = '#ffff00';
-              p.fill(255, 255, 0);
-              p.noStroke();
-              p.circle(fx, fy, 10);
-              p.pop();
+              if (handLandmarks && handLandmarks[index]) {
+                let fx = (1 - handLandmarks[index].x) * p.width;
+                let fy = handLandmarks[index].y * p.height;
+                p.push();
+                p.drawingContext.shadowBlur = 20;
+                p.drawingContext.shadowColor = '#ffff00';
+                p.fill(255, 255, 0);
+                p.noStroke();
+                p.circle(fx, fy, 10);
+                p.pop();
+              }
             }
           }
         }
@@ -400,9 +421,7 @@ export default function App() {
     p5Instance = new window.p5(sketch, canvasContainerRef.current);
 
     return () => {
-      // FIX: libera os modelos MediaPipe (WASM/GPU) e para a câmera
-      // antes de remover o sketch — evita vazamento de memória e
-      // requisições de câmera duplicadas (ex: React StrictMode).
+      // Destruição síncrona estrita dos alocadores WebASM da GPU e encerramento de hardware de captura
       poseLandmarkerRef?.close?.();
       handLandmarkerRef?.close?.();
       imageSegmenterRef?.close?.();
